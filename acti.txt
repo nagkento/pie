@@ -1,0 +1,80 @@
+project/
+ ├ Cargo.toml
+ ├ Cargo.lock
+ ├ src/
+ │  └ main.rs
+ ├ Dockerfile
+ └ docker-compose.yml
+
+
+
+
+
+# ---------- build stage ----------
+FROM rust:1.76 as builder
+
+WORKDIR /app
+
+# 必要パッケージ
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    wget \
+    libssl-dev \
+    pkg-config
+
+# GEOS version
+ENV GEOS_VERSION=3.12.1
+
+# GEOS install
+RUN wget https://download.osgeo.org/geos/geos-${GEOS_VERSION}.tar.bz2 \
+    && tar xjf geos-${GEOS_VERSION}.tar.bz2 \
+    && cd geos-${GEOS_VERSION} \
+    && mkdir build \
+    && cd build \
+    && cmake .. \
+    && make -j$(nproc) \
+    && make install \
+    && ldconfig
+
+# cargo build caching
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo "fn main(){}" > src/main.rs
+RUN cargo build --release
+
+# build actual source
+COPY src ./src
+RUN cargo build --release
+
+# ---------- runtime stage ----------
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# copy geos from builder
+COPY --from=builder /usr/local/lib /usr/local/lib
+COPY --from=builder /usr/local/include /usr/local/include
+RUN ldconfig
+
+# copy binary
+COPY --from=builder /app/target/release/app /usr/local/bin/app
+
+CMD ["app"]
+
+
+
+
+
+
+version: "3.9"
+
+services:
+  actix-server:
+    build: .
+    container_name: actix-server
+    ports:
+      - "8080:8080"
+    restart: always
